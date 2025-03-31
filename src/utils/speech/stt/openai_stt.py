@@ -151,3 +151,69 @@ class OpenAISTT(BaseSTT):
             logger.exception("Full traceback:")
         
         return None 
+
+    def transcribe_file(self, audio_file_path: str) -> Optional[str]:
+        """تبدیل فایل صوتی به متن با OpenAI"""
+        if not self.is_available:
+            logger.error("OpenAI STT is not available")
+            return None
+        
+        try:
+            # بررسی وجود فایل
+            if not os.path.exists(audio_file_path):
+                logger.error(f"Audio file not found: {audio_file_path}")
+                return None
+            
+            # بررسی اندازه فایل
+            file_size = os.path.getsize(audio_file_path)
+            logger.info(f"Audio file size: {file_size} bytes")
+            
+            if file_size < 1000:
+                logger.warning("Audio file is very small, may not contain speech")
+            
+            # ارسال به OpenAI برای تبدیل به متن
+            with open(audio_file_path, 'rb') as audio_file:
+                logger.info("Sending audio to OpenAI for transcription...")
+                response = self.client.audio.transcriptions.create(
+                    model="gpt-4o-transcribe",  # استفاده از مدل Whisper
+                    file=audio_file,
+                    language="fa",
+                    prompt="این متن فارسی است. نمونه جملات: این کتاب در کتابفروشی ما موجود نیست. اگر مایلید، می‌توانم به شما کتاب‌های مشابه را پیشنهاد دهم. برای اطلاعات بیشتر، لطفاً موضوع، نویسنده یا سبک مورد نظر خود را مشخص کنید.",
+                    response_format="text"
+                )
+            
+            # دریافت متن
+            if hasattr(response, 'text'):
+                text = response.text
+            else:
+                text = response
+            
+            # بررسی اگر متن به صورت حروف لاتین باشد
+            if text and not re.search('[\u0600-\u06FF]', text):
+                logger.warning(f"Text appears to be romanized rather than Farsi script: '{text}'")
+                # تلاش مجدد با راهنمایی قوی‌تر
+                with open(audio_file_path, 'rb') as audio_file:
+                    try:
+                        logger.info("Retrying transcription with stronger Farsi hint...")
+                        response = self.client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=audio_file,
+                            language="fa",
+                            prompt="این یک متن فارسی است، لطفا به الفبای فارسی تبدیل کنید نه حروف لاتین. نمونه جملات: این کتاب در کتابفروشی ما موجود نیست. اگر مایلید، می‌توانم به شما کتاب‌های مشابه را پیشنهاد دهم. برای اطلاعات بیشتر، لطفاً موضوع، نویسنده یا سبک مورد نظر خود را مشخص کنید.",
+                            response_format="text"
+                        )
+                        
+                        if hasattr(response, 'text'):
+                            text = response.text
+                        else:
+                            text = response
+                    except Exception as retry_error:
+                        logger.error(f"Error in retry transcription: {retry_error}")
+            
+            logger.info(f"Recognized text: '{text}'")
+            return text
+            
+        except Exception as e:
+            logger.error(f"Error in file transcription: {e}")
+            logger.exception("Full traceback:")
+            return None 

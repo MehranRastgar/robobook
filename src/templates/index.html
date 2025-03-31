@@ -146,6 +146,21 @@
                 opacity: 1;
             }
         }
+
+        .audio-meter {
+            width: 100%;
+            height: 20px;
+            background: #eee;
+            border-radius: 10px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        .audio-meter-level {
+            height: 100%;
+            background: #4CAF50;
+            transition: width 0.1s;
+        }
     </style>
 </head>
 
@@ -210,6 +225,9 @@
         }
 
         let isRecording = false;
+        let audioContext;
+        let mediaRecorder;
+        let audioChunks = [];
 
         function toggleVoiceInput() {
             if (!isRecording) {
@@ -219,50 +237,117 @@
             }
         }
 
-        function startRecording() {
-            isRecording = true;
-            document.getElementById('voice-button').classList.add('recording');
-            document.getElementById('recording-status').style.display = 'block';
+        function initAudioContext() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
 
-            // Start recording
-            fetch('/api/listen', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    timeout: 30,
-                    phrase_time_limit: 30,
-                    auto_speak: true
-                })
-            })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        addMessage(data.text, 'user');
-                        addMessage(data.response, 'bot');
-                    } else {
-                        addMessage('متأسفانه نتوانستم صدای شما را تشخیص دهم. لطفاً دوباره تلاش کنید.', 'bot');
+        function createAudioMeter(stream) {
+            const analyser = audioContext.createAnalyser();
+            const microphone = audioContext.createMediaStreamSource(stream);
+            microphone.connect(analyser);
+
+            const meterElement = document.createElement('div');
+            meterElement.className = 'audio-meter';
+            document.getElementById('recording-status').appendChild(meterElement);
+
+            return {
+                analyser,
+                meterElement,
+                microphone
+            };
+        }
+
+        async function startRecording() {
+            try {
+                console.log('Requesting microphone access...');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        channelCount: 1,
+                        sampleRate: 44100
                     }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    addMessage('خطا در پردازش صدا. لطفاً دوباره تلاش کنید.', 'bot');
-                })
-                .finally(() => {
-                    isRecording = false;
-                    document.getElementById('voice-button').classList.remove('recording');
-                    document.getElementById('recording-status').style.display = 'none';
                 });
+                console.log('Microphone access granted');
+
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus',
+                    audioBitsPerSecond: 128000
+                });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    console.log('Received audio chunk:', event.data.size, 'bytes');
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    console.log('Recording stopped, processing chunks...');
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    console.log('Created audio blob:', audioBlob.size, 'bytes');
+
+                    const formData = new FormData();
+                    formData.append('audio', audioBlob, 'recording.webm');
+
+                    try {
+                        console.log('Sending audio to server...');
+                        const response = await fetch('/api/listen', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        console.log('Server response status:', response.status);
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
+                        const data = await response.json();
+                        console.log('Server response:', data);
+
+                        if (data.text) {
+                            document.getElementById('user-input').value = data.text;
+                            document.getElementById('sendMessage').click();
+                        } else {
+                            alert('متأسفانه نتوانستم صدای شما را تشخیص دهم. لطفاً دوباره تلاش کنید.');
+                        }
+                    } catch (error) {
+                        console.error('Error sending audio:', error);
+                        alert('خطا در ارسال صدا. لطفاً دوباره تلاش کنید.');
+                    } finally {
+                        // Clean up the stream
+                        stream.getTracks().forEach(track => track.stop());
+                    }
+                };
+
+                mediaRecorder.start(1000); // Collect data every second
+                isRecording = true;
+                updateRecordingUI();
+                console.log('Recording started');
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                alert('خطا در دسترسی به میکروفون. لطفاً مجوز دسترسی را بررسی کنید.');
+            }
         }
 
         function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                console.log('Stopping recording...');
+                mediaRecorder.stop();
+            }
             isRecording = false;
             document.getElementById('voice-button').classList.remove('recording');
             document.getElementById('recording-status').style.display = 'none';
         }
 
-        // Handle Enter key in textarea
+        function updateRecordingUI() {
+            const recordingStatus = document.getElementById('recording-status');
+            recordingStatus.style.display = 'block';
+            recordingStatus.innerHTML = '<div class="recording-indicator"><div class="pulse"></div><span>در حال ضبط... لطفاً صحبت کنید</span></div>';
+            document.getElementById('voice-button').classList.add('recording');
+        }
+
         document.getElementById('user-input').addEventListener('keypress', function (e) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();

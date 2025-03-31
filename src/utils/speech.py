@@ -54,23 +54,21 @@ class SpeechHandler:
         self.azure_service_region = os.getenv("AZURE_SERVICE_REGION", "eastus")
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         
-        # بررسی دسترسی به OpenAI TTS
-        if self.openai_api_key:
-            try:
-                from openai import OpenAI
-                from src.utils.openai_tts import OpenAITTS
-                
-                self.openai_client = OpenAI(api_key=self.openai_api_key)
-                self.openai_tts = OpenAITTS(
-                    client=self.openai_client,
-                    model="tts-1",
-                    voice="alloy",  # می‌توانید صدای دیگری انتخاب کنید: alloy, echo, fable, onyx, nova, shimmer
-                    speed=1.0
-                )
+        # Initialize OpenAI client
+        try:
+            import openai
+            if self.openai_api_key:
+                self.openai_client = openai.OpenAI(api_key=self.openai_api_key)
                 self.openai_available = True
-                logger.info("OpenAI TTS is available for Persian")
-            except ImportError:
-                logger.info("OpenAI module is not available")
+                logger.info("OpenAI client initialized successfully")
+            else:
+                self.openai_available = False
+                self.openai_client = None
+                logger.warning("OpenAI API key not found")
+        except ImportError:
+            self.openai_available = False
+            self.openai_client = None
+            logger.warning("OpenAI module not available")
         
         # بررسی دسترسی به Azure
         if self.azure_speech_key:
@@ -545,6 +543,43 @@ class SpeechHandler:
                 
         except Exception as e:
             logger.error(f"Error in speech recognition: {e}")
+            return None
+    
+    def transcribe_audio(self, audio_file: Any) -> Optional[str]:
+        """
+        تبدیل فایل صوتی به متن با استفاده از OpenAI Whisper API
+        
+        Args:
+            audio_file: فایل صوتی برای تبدیل
+            
+        Returns:
+            متن تبدیل شده یا None در صورت خطا
+        """
+        logger.info("Starting audio transcription")
+        
+        if not self.openai_available:
+            logger.error("OpenAI client is not available")
+            return None
+
+        if not self.openai_api_key:
+            logger.error("OpenAI API key is not set")
+            return None
+
+        if not self.openai_client:
+            logger.error("OpenAI client is not initialized")
+            return None
+
+        try:
+            with open(audio_file, 'rb') as f:
+                response = self.openai_client.audio.transcriptions.create(
+                    file=f,
+                    model="whisper-1",
+                    language="fa"
+                )
+                logger.info("Audio transcription completed successfully")
+                return response.text
+        except Exception as e:
+            logger.error(f"Error in speech recognition: {str(e)}")
             return None
     
     def save_to_file(self, text: str, filename: str) -> bool:
