@@ -474,139 +474,78 @@ class SpeechHandler:
         """
         گوش دادن به صدای کاربر و تبدیل آن به متن با استفاده از OpenAI STT
         """
-        if self.recognizer is None:
-            logger.warning("Speech recognition is not available")
-            return None
-
         try:
-            # Get list of available microphones to verify input sources
-            available_mics = sr.Microphone.list_microphone_names()
-            logger.info(f"Available microphones: {available_mics}")
+            # Create a temporary file for recording audio
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
+                temp_filename = temp_file.name
+
+            # Record audio using sounddevice
+            import sounddevice as sd
+            import soundfile as sf
+            import numpy as np
             
-            # Try with a specific microphone index if more than one is available
-            mic_index = 0  # Default to first microphone
+            # Set up recording parameters
+            sample_rate = 44100
+            channels = 1
+            silence_threshold = 0.01  # Threshold for silence detection
+            silence_duration = 2  # Seconds of silence to stop recording
             
-            # Use the selected microphone
-            with sr.Microphone(device_index=mic_index, sample_rate=44100) as source:
-                logger.info(f"Listening for speech using microphone: {available_mics[mic_index] if len(available_mics) > mic_index else 'default'}")
+            # Initialize recording buffer
+            recording_buffer = []
+            silence_counter = 0
+            
+            def audio_callback(indata, frames, time, status):
+                if status:
+                    logger.warning(f"Audio callback status: {status}")
+                # Check for silence
+                if np.max(np.abs(indata)) < silence_threshold:
+                    nonlocal silence_counter
+                    silence_counter += frames / sample_rate
+                else:
+                    silence_counter = 0
+                recording_buffer.append(indata.copy())
+            
+            # Start recording
+            logger.info("Recording started - Please speak...")
+            with sd.InputStream(samplerate=sample_rate, channels=channels, callback=audio_callback):
+                while silence_counter < silence_duration:
+                    sd.sleep(100)  # Sleep for 100ms between checks
+                    if len(recording_buffer) * 1.0 / sample_rate > phrase_time_limit:
+                        break
+            
+            # Stop recording
+            sd.stop()
+            logger.info("Recording stopped")
+            
+            # Combine all recorded chunks
+            recording = np.concatenate(recording_buffer, axis=0)
+            
+            # Save the recording
+            sf.write(temp_filename, recording, sample_rate)
+            
+            # Use OpenAI's transcription
+            if self.openai_api_key:
+                from openai import OpenAI
+                client = OpenAI(api_key=self.openai_api_key)
                 
-                # Noise reduction and calibration
-                logger.info("Adjusting for ambient noise...")
-                self.recognizer.adjust_for_ambient_noise(source, duration=3.0)  # Increased to 3 seconds for better calibration
-                
-                # More sensitive speech detection settings
-                self.recognizer.energy_threshold = 250  # Lower threshold for more sensitive detection
-                self.recognizer.dynamic_energy_threshold = True
-                self.recognizer.dynamic_energy_adjustment_ratio = 1.5  # Make it more responsive
-                
-                # Better handling of Persian speech patterns
-                self.recognizer.pause_threshold = 0.8  # Default is 0.8, keep it for Persian
-                self.recognizer.phrase_threshold = 0.3  # Lower threshold for Persian phrases
-                self.recognizer.non_speaking_duration = 0.5  # Shorter non-speaking duration
-                
-                logger.info(f"Energy threshold set to: {self.recognizer.energy_threshold}")
-                
-                try:
-                    logger.info("Waiting for speech (speak in Farsi)...")
-                    audio = self.recognizer.listen(
-                        source, 
-                        timeout=timeout, 
-                        phrase_time_limit=phrase_time_limit,
-                        snowboy_configuration=None  # Disable snowboy for better Farsi support
+                with open(temp_filename, "rb") as audio_file:
+                    transcript = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language="fa"  # Specify Persian language
                     )
-                    logger.info(f"Audio captured: {len(audio.get_raw_data())} bytes, recognizing with OpenAI...")
-
-                    # Check for OpenAI API key
-                    openai_api_key = os.getenv('OPENAI_API_KEY')
-                    if not openai_api_key:
-                        logger.error("OPENAI_API_KEY environment variable not set")
-                        return None
-
-                    # Save audio data to a temporary file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-                        # Use a higher quality audio encoding for better recognition
-                        wav_data = audio.get_wav_data(
-                            convert_rate=44100,  # CD quality
-                            convert_width=2      # 16-bit
-                        )
-                        temp_file.write(wav_data)
-                        temp_filename = temp_file.name
-                        
-                        # Log file size to help debug audio capture issues
-                        file_size = os.path.getsize(temp_filename)
-                        logger.info(f"Audio saved to temporary file: {file_size} bytes")
-                        
-                        if file_size < 1000:  # Very small file likely means no speech captured
-                            logger.warning("Audio file is very small, may not contain speech")
-                    
-                    # Use OpenAI for transcription
-                    from openai import OpenAI
-                    client = OpenAI(api_key=openai_api_key)
-                    
-                    with open(temp_filename, 'rb') as audio_file:
-                        logger.info("Sending audio to OpenAI for transcription...")
-                        response = client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=audio_file,
-                            language="fa",
-                            prompt="این متن فارسی است. نمونه جملات: این کتاب در کتابفروشی ما موجود نیست. اگر مایلید، می‌توانم به شما کتاب‌های مشابه را پیشنهاد دهم. برای اطلاعات بیشتر، لطفاً موضوع، نویسنده یا سبک مورد نظر خود را مشخص کنید.",
-                            response_format="text"
-                        )
-                    
-                    # Starting in version 1.0.0, response is a TextResponse object with a text attribute
-                    if hasattr(response, 'text'):
-                        text = response.text
-                    else:
-                        # In case we're using an older version that returns a string directly
-                        text = response
-                        
-                    # Check if the text looks like romanized text rather than proper Farsi
-                    import re
-                    if text and not re.search('[\u0600-\u06FF]', text):
-                        logger.warning(f"Text appears to be romanized rather than Farsi script: '{text}'")
-                        # Try again with stronger language hint and example text
-                        with open(temp_filename, 'rb') as audio_file:
-                            try:
-                                logger.info("Retrying transcription with stronger Farsi hint and examples...")
-                                response = client.audio.transcriptions.create(
-                                    model="whisper-1",
-                                    file=audio_file,
-                                    language="fa",
-                                    prompt="این یک متن فارسی است، لطفا به الفبای فارسی تبدیل کنید نه حروف لاتین. نمونه جملات: این کتاب در کتابفروشی ما موجود نیست. اگر مایلید، می‌توانم به شما کتاب‌های مشابه را پیشنهاد دهم. برای اطلاعات بیشتر، لطفاً موضوع، نویسنده یا سبک مورد نظر خود را مشخص کنید.",
-                                    response_format="text"
-                                )
-                                
-                                if hasattr(response, 'text'):
-                                    text = response.text
-                                else:
-                                    text = response
-                            except Exception as retry_error:
-                                logger.error(f"Error in retry transcription: {retry_error}")
-                    
-                    # Clean up temporary file after all processing is done
-                    try:
-                        os.unlink(temp_filename)
-                        logger.debug("Temporary audio file deleted successfully")
-                    except Exception as cleanup_error:
-                        logger.warning(f"Error deleting temporary file: {cleanup_error}")
-                    
-                    logger.info(f"Recognized text: '{text}'")
-                    return text
-                    
-                except sr.WaitTimeoutError:
-                    logger.warning("Listening timed out: no speech detected")
-                except sr.UnknownValueError:
-                    logger.warning("Speech was not understood")
-                except sr.RequestError as e:
-                    logger.error(f"Could not request results; {e}")
-                except Exception as e:
-                    logger.error(f"Error in OpenAI transcription: {e}")
-                    logger.exception("Full traceback:")
+                
+                # Clean up the temporary file
+                os.unlink(temp_filename)
+                
+                return transcript.text
+            else:
+                logger.error("OpenAI API key not found")
+                return None
+                
         except Exception as e:
-            logger.error(f"Error in speech recognition setup: {e}")
-            logger.exception("Full traceback:")
-
-        return None
+            logger.error(f"Error in speech recognition: {e}")
+            return None
     
     def save_to_file(self, text: str, filename: str) -> bool:
         """

@@ -26,9 +26,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('robobook.log')
+        logging.FileHandler('robobook.log', encoding='utf-8')
     ]
 )
+
+# تنظیم encoding برای stdout
+import codecs
+sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
 
 logger = logging.getLogger("RoboBook")
 
@@ -87,10 +91,12 @@ def process_query():
     # پردازش پرسش با مدل زبانی
     llm_response = llm.process_query(query, book_results)
     
-    return jsonify({
+    response = jsonify({
         "response": llm_response,
         "books": book_results
     })
+    response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    return response
 
 @app.route('/api/speak', methods=['POST'])
 def text_to_speech():
@@ -279,24 +285,30 @@ def speech_to_text():
             if auto_speak:
                 speech.speak(llm_response, blocking=False)
             
-            return jsonify({
+            response = jsonify({
                 "status": "success",
                 "text": text,
                 "response": llm_response,
                 "books": book_results
             })
+            response.headers['Content-Type'] = 'application/json; charset=utf-8'
+            return response
         else:
-            return jsonify({
+            response = jsonify({
                 "status": "error",
                 "error": "Could not recognize speech"
             }), 400
+            response.headers['Content-Type'] = 'application/json; charset=utf-8'
+            return response
             
     except Exception as e:
         logger.error(f"Error in speech recognition: {e}")
-        return jsonify({
+        response = jsonify({
             "status": "error",
             "error": str(e)
         }), 500
+        response.headers['Content-Type'] = 'application/json; charset=utf-8'
+        return response
 
 @app.route('/api/listen_and_respond', methods=['GET'])
 def listen_and_respond():
