@@ -36,7 +36,7 @@ class SpeechHandler:
             rate: سرعت گفتار (کلمه در دقیقه)
             volume: بلندی صدا (بین 0 تا 1)
             voice_id: شناسه صدا (اختیاری)
-            tts_type: نوع موتور TTS ("pyttsx3", "gTTS", "espeak", "azure", "auto")
+            tts_type: نوع موتور TTS ("pyttsx3", "gTTS", "espeak", "azure", "openai", "auto")
         """
         self.rate = rate
         self.volume = volume
@@ -49,8 +49,28 @@ class SpeechHandler:
         self.gtts_language = "fa"  # زبان پیش‌فرض برای gTTS
         self.espeak_available = False  # وضعیت دسترسی به espeak
         self.azure_available = False  # وضعیت دسترسی به Azure TTS
+        self.openai_available = False  # وضعیت دسترسی به OpenAI TTS
         self.azure_speech_key = os.getenv("AZURE_SPEECH_KEY", "")
         self.azure_service_region = os.getenv("AZURE_SERVICE_REGION", "eastus")
+        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
+        
+        # بررسی دسترسی به OpenAI TTS
+        if self.openai_api_key:
+            try:
+                from openai import OpenAI
+                from src.utils.openai_tts import OpenAITTS
+                
+                self.openai_client = OpenAI(api_key=self.openai_api_key)
+                self.openai_tts = OpenAITTS(
+                    client=self.openai_client,
+                    model="tts-1",
+                    voice="alloy",  # می‌توانید صدای دیگری انتخاب کنید: alloy, echo, fable, onyx, nova, shimmer
+                    speed=1.0
+                )
+                self.openai_available = True
+                logger.info("OpenAI TTS is available for Persian")
+            except ImportError:
+                logger.info("OpenAI module is not available")
         
         # بررسی دسترسی به Azure
         if self.azure_speech_key:
@@ -72,8 +92,11 @@ class SpeechHandler:
         # راه‌اندازی موتور تبدیل متن به گفتار
         if self.tts_type == "auto":
             # امتحان کردن موتورهای مختلف
-            if self.azure_available:
-                logger.info("Using Azure Speech for TTS (best quality for Persian)")
+            if self.openai_available:
+                logger.info("Using OpenAI TTS for Persian (best quality)")
+                self.tts_type = "openai"
+            elif self.azure_available:
+                logger.info("Using Azure Speech for TTS (good quality for Persian)")
                 self.tts_type = "azure"
             elif self.espeak_available:
                 logger.info("Using espeak for TTS (good for Persian)")
@@ -111,6 +134,32 @@ class SpeechHandler:
                 except ImportError:
                     logger.warning("No TTS engine available")
                     self.tts_type = "none"
+        elif self.tts_type == "openai":
+            if not self.openai_available:
+                if self.openai_api_key:
+                    try:
+                        from openai import OpenAI
+                        from src.utils.openai_tts import OpenAITTS
+                        
+                        self.openai_client = OpenAI(api_key=self.openai_api_key)
+                        self.openai_tts = OpenAITTS(
+                            client=self.openai_client,
+                            model="tts-1",
+                            voice="alloy",
+                            speed=1.0
+                        )
+                        self.openai_available = True
+                        logger.info("OpenAI TTS initialized for Persian")
+                    except ImportError:
+                        logger.warning("OpenAI module not available, falling back to other methods")
+                        self.tts_type = "auto"
+                        self.__init__(rate, volume, voice_id, "auto")
+                        return
+                else:
+                    logger.warning("OpenAI TTS requires OPENAI_API_KEY, falling back to other methods")
+                    self.tts_type = "auto"
+                    self.__init__(rate, volume, voice_id, "auto")
+                    return
         elif self.tts_type == "azure":
             if not self.azure_available:
                 if self.azure_speech_key:
@@ -207,8 +256,11 @@ class SpeechHandler:
         # استفاده از قفل برای جلوگیری از استفاده همزمان
         with self.tts_lock:
             try:
+                # اولویت با OpenAI برای زبان فارسی
+                if self.tts_type == "openai" and self.openai_available:
+                    return self._speak_openai(text, blocking)
                 # اولویت با Azure برای زبان فارسی
-                if self.tts_type == "azure" and self.azure_available:
+                elif self.tts_type == "azure" and self.azure_available:
                     return self._speak_azure(text, blocking)
                 # اولویت با espeak برای زبان فارسی
                 elif self.tts_type == "espeak" and self.espeak_available:
@@ -418,45 +470,142 @@ class SpeechHandler:
             logger.error(f"Error in gTTS speech: {e}")
             return False
     
-    def listen(self, timeout: int = 5, phrase_time_limit: int = 10) -> Optional[str]:
+    def listen(self, timeout: int = 10, phrase_time_limit: int = 30) -> Optional[str]:
         """
-        گوش دادن به صدای کاربر و تبدیل آن به متن
-        
-        Args:
-            timeout: مدت زمان انتظار برای شروع صحبت (ثانیه)
-            phrase_time_limit: حداکثر مدت زمان گوش دادن به یک جمله (ثانیه)
-            
-        Returns:
-            متن تشخیص داده شده یا None در صورت خطا
+        گوش دادن به صدای کاربر و تبدیل آن به متن با استفاده از OpenAI STT
         """
         if self.recognizer is None:
             logger.warning("Speech recognition is not available")
             return None
-        
-        # استفاده از میکروفون برای ضبط صدا
+
         try:
-            with sr.Microphone() as source:
-                logger.info("Listening for speech...")
-                # تنظیم برای کاهش نویز محیط
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            # Get list of available microphones to verify input sources
+            available_mics = sr.Microphone.list_microphone_names()
+            logger.info(f"Available microphones: {available_mics}")
+            
+            # Try with a specific microphone index if more than one is available
+            mic_index = 0  # Default to first microphone
+            
+            # Use the selected microphone
+            with sr.Microphone(device_index=mic_index, sample_rate=44100) as source:
+                logger.info(f"Listening for speech using microphone: {available_mics[mic_index] if len(available_mics) > mic_index else 'default'}")
+                
+                # Noise reduction and calibration
+                logger.info("Adjusting for ambient noise...")
+                self.recognizer.adjust_for_ambient_noise(source, duration=3.0)  # Increased to 3 seconds for better calibration
+                
+                # More sensitive speech detection settings
+                self.recognizer.energy_threshold = 250  # Lower threshold for more sensitive detection
+                self.recognizer.dynamic_energy_threshold = True
+                self.recognizer.dynamic_energy_adjustment_ratio = 1.5  # Make it more responsive
+                
+                # Better handling of Persian speech patterns
+                self.recognizer.pause_threshold = 0.8  # Default is 0.8, keep it for Persian
+                self.recognizer.phrase_threshold = 0.3  # Lower threshold for Persian phrases
+                self.recognizer.non_speaking_duration = 0.5  # Shorter non-speaking duration
+                
+                logger.info(f"Energy threshold set to: {self.recognizer.energy_threshold}")
                 
                 try:
-                    audio = self.recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
-                    logger.info("Audio captured, recognizing...")
+                    logger.info("Waiting for speech (speak in Farsi)...")
+                    audio = self.recognizer.listen(
+                        source, 
+                        timeout=timeout, 
+                        phrase_time_limit=phrase_time_limit,
+                        snowboy_configuration=None  # Disable snowboy for better Farsi support
+                    )
+                    logger.info(f"Audio captured: {len(audio.get_raw_data())} bytes, recognizing with OpenAI...")
+
+                    # Check for OpenAI API key
+                    openai_api_key = os.getenv('OPENAI_API_KEY')
+                    if not openai_api_key:
+                        logger.error("OPENAI_API_KEY environment variable not set")
+                        return None
+
+                    # Save audio data to a temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
+                        # Use a higher quality audio encoding for better recognition
+                        wav_data = audio.get_wav_data(
+                            convert_rate=44100,  # CD quality
+                            convert_width=2      # 16-bit
+                        )
+                        temp_file.write(wav_data)
+                        temp_filename = temp_file.name
+                        
+                        # Log file size to help debug audio capture issues
+                        file_size = os.path.getsize(temp_filename)
+                        logger.info(f"Audio saved to temporary file: {file_size} bytes")
+                        
+                        if file_size < 1000:  # Very small file likely means no speech captured
+                            logger.warning("Audio file is very small, may not contain speech")
                     
-                    # تلاش برای تشخیص با استفاده از موتور گوگل (می‌توان تنظیم کرد)
-                    text = self.recognizer.recognize_google(audio, language="fa-IR")
-                    logger.info(f"Recognized: {text}")
+                    # Use OpenAI for transcription
+                    from openai import OpenAI
+                    client = OpenAI(api_key=openai_api_key)
+                    
+                    with open(temp_filename, 'rb') as audio_file:
+                        logger.info("Sending audio to OpenAI for transcription...")
+                        response = client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=audio_file,
+                            language="fa",
+                            prompt="این متن فارسی است. نمونه جملات: این کتاب در کتابفروشی ما موجود نیست. اگر مایلید، می‌توانم به شما کتاب‌های مشابه را پیشنهاد دهم. برای اطلاعات بیشتر، لطفاً موضوع، نویسنده یا سبک مورد نظر خود را مشخص کنید.",
+                            response_format="text"
+                        )
+                    
+                    # Starting in version 1.0.0, response is a TextResponse object with a text attribute
+                    if hasattr(response, 'text'):
+                        text = response.text
+                    else:
+                        # In case we're using an older version that returns a string directly
+                        text = response
+                        
+                    # Check if the text looks like romanized text rather than proper Farsi
+                    import re
+                    if text and not re.search('[\u0600-\u06FF]', text):
+                        logger.warning(f"Text appears to be romanized rather than Farsi script: '{text}'")
+                        # Try again with stronger language hint and example text
+                        with open(temp_filename, 'rb') as audio_file:
+                            try:
+                                logger.info("Retrying transcription with stronger Farsi hint and examples...")
+                                response = client.audio.transcriptions.create(
+                                    model="whisper-1",
+                                    file=audio_file,
+                                    language="fa",
+                                    prompt="این یک متن فارسی است، لطفا به الفبای فارسی تبدیل کنید نه حروف لاتین. نمونه جملات: این کتاب در کتابفروشی ما موجود نیست. اگر مایلید، می‌توانم به شما کتاب‌های مشابه را پیشنهاد دهم. برای اطلاعات بیشتر، لطفاً موضوع، نویسنده یا سبک مورد نظر خود را مشخص کنید.",
+                                    response_format="text"
+                                )
+                                
+                                if hasattr(response, 'text'):
+                                    text = response.text
+                                else:
+                                    text = response
+                            except Exception as retry_error:
+                                logger.error(f"Error in retry transcription: {retry_error}")
+                    
+                    # Clean up temporary file after all processing is done
+                    try:
+                        os.unlink(temp_filename)
+                        logger.debug("Temporary audio file deleted successfully")
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error deleting temporary file: {cleanup_error}")
+                    
+                    logger.info(f"Recognized text: '{text}'")
                     return text
+                    
                 except sr.WaitTimeoutError:
                     logger.warning("Listening timed out: no speech detected")
                 except sr.UnknownValueError:
                     logger.warning("Speech was not understood")
                 except sr.RequestError as e:
                     logger.error(f"Could not request results; {e}")
+                except Exception as e:
+                    logger.error(f"Error in OpenAI transcription: {e}")
+                    logger.exception("Full traceback:")
         except Exception as e:
-            logger.error(f"Error in speech recognition: {e}")
-        
+            logger.error(f"Error in speech recognition setup: {e}")
+            logger.exception("Full traceback:")
+
         return None
     
     def save_to_file(self, text: str, filename: str) -> bool:
@@ -516,25 +665,51 @@ class SpeechHandler:
         """استفاده از espeak برای تبدیل متن به گفتار فارسی"""
         try:
             import espeakng
+            import shutil
             
+            # Check if espeak is available in PATH
+            espeak_path = shutil.which("espeak-ng")
+            if not espeak_path and os.name == 'nt':  # Windows
+                # Try common installation paths on Windows
+                potential_paths = [
+                    "C:\\Program Files\\eSpeak NG\\espeak-ng.exe",
+                    "C:\\Program Files (x86)\\eSpeak NG\\espeak-ng.exe",
+                    os.path.expanduser("~\\AppData\\Local\\Programs\\eSpeak NG\\espeak-ng.exe"),
+                    os.path.join(os.getcwd(), "espeak-ng-1.52-setup.exe")  # Check if it's in the current directory
+                ]
+                for path in potential_paths:
+                    if os.path.exists(path):
+                        espeak_path = path
+                        logger.info(f"Found ESpeakNG at: {espeak_path}")
+                        break
+            
+            if not espeak_path:
+                # If espeak-ng is not found, we'll print a warning but try to use espeakng library without specifying path
+                logger.warning("espeak-ng executable not found in PATH. Using default espeakng library functionality.")
+                # We'll still continue with the code
+                
             # ایجاد یک فایل موقت برای ذخیره صدا
             with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
                 temp_filename = temp_file.name
             
             # تنظیم espeak برای زبان فارسی
-            speaker = espeakng.Speaker()
-            speaker.voice = 'fa'  # زبان فارسی
-            speaker.pitch = 50  # تنظیم زیر و بمی صدا (0-100)
-            speaker.wpm = self.rate  # سرعت گفتار
+            espeak = espeakng.ESpeakNG()
+            espeak.voice = 'fa'  # زبان فارسی
+            espeak.pitch = 50  # تنظیم زیر و بمی صدا (0-100)
+            espeak.speed = self.rate  # سرعت گفتار
+            
+            # Set the path to espeak-ng executable if found
+            if espeak_path:
+                espeak.executable_path = espeak_path
             
             logger.debug(f"Speaking with espeak (Persian): {text[:50]}...")
             
             if blocking:
                 # گفتار مستقیم
-                speaker.say(text)
+                espeak.say(text)
             else:
                 # ذخیره در فایل و پخش در پس‌زمینه
-                speaker.wavfile(text, temp_filename)
+                espeak.save_to_file(text, temp_filename)
                 
                 def play_audio():
                     try:
@@ -558,6 +733,27 @@ class SpeechHandler:
             return True
         except Exception as e:
             logger.error(f"Error in espeak speech: {e}")
+            # If there's an error, try using direct command line instead
+            try:
+                if os.name == 'nt' and espeak_path:  # Windows
+                    import subprocess
+                    output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav').name
+                    subprocess.run([espeak_path, "-w", output_file, "-v", "fa", text], check=True)
+                    
+                    # Play the audio using pygame
+                    import pygame
+                    pygame.mixer.init()
+                    pygame.mixer.music.load(output_file)
+                    pygame.mixer.music.play()
+                    while pygame.mixer.music.get_busy():
+                        pygame.time.Clock().tick(10)
+                    pygame.mixer.quit()
+                    
+                    # Clean up
+                    os.unlink(output_file)
+                    return True
+            except Exception as cmd_error:
+                logger.error(f"Error using espeak-ng command line: {cmd_error}")
             return False
     
     def _speak_azure(self, text: str, blocking: bool = True) -> bool:
@@ -622,4 +818,72 @@ class SpeechHandler:
             return True
         except Exception as e:
             logger.error(f"Error in Azure speech: {e}")
+            return False
+    
+    def _speak_openai(self, text: str, blocking: bool = True) -> bool:
+        """
+        تبدیل متن به گفتار با استفاده از OpenAI Text-to-Speech API
+        
+        Args:
+            text: متن برای تبدیل به گفتار
+            blocking: آیا اجرای برنامه تا پایان صحبت متوقف شود؟
+            
+        Returns:
+            موفقیت در پخش صدا
+        """
+        if not self.openai_available:
+            logger.warning("OpenAI TTS is not available")
+            return False
+        
+        try:
+            # Create a temporary file for the audio
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
+                temp_filename = temp_file.name
+            
+            # Use existing OpenAI TTS instance, but handle the response
+            response = self.openai_client.audio.speech.create(
+                model="tts-1",
+                voice=self.openai_tts.voice,
+                input=text,
+                speed=self.openai_tts.speed,
+                response_format="mp3"
+            )
+            
+            # Stream the response to the file
+            response.stream_to_file(temp_filename)
+            
+            if blocking:
+                # Play audio and wait for completion
+                import pygame
+                pygame.mixer.init()
+                pygame.mixer.music.load(temp_filename)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    pygame.time.Clock().tick(10)
+                pygame.mixer.quit()
+                # Clean up
+                os.unlink(temp_filename)
+            else:
+                # Play in background thread
+                def play_audio():
+                    try:
+                        import pygame
+                        pygame.mixer.init()
+                        pygame.mixer.music.load(temp_filename)
+                        pygame.mixer.music.play()
+                        while pygame.mixer.music.get_busy():
+                            pygame.time.Clock().tick(10)
+                        pygame.mixer.quit()
+                        # Clean up
+                        os.unlink(temp_filename)
+                    except Exception as e:
+                        logger.error(f"Error playing OpenAI audio: {e}")
+                
+                thread = threading.Thread(target=play_audio)
+                thread.daemon = True
+                thread.start()
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error in OpenAI TTS: {e}")
             return False 
