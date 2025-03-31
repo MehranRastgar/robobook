@@ -247,55 +247,76 @@ export default function ChatInterface() {
     };
 
     return (
-        <div className="flex flex-col h-screen max-w-4xl mx-auto p-4">
-            <div className="flex-1 overflow-y-auto mb-4 space-y-4">
-                {messages.map((message, index) => (
-                    <div
-                        key={index}
-                        className={`flex ${message.isUser ? 'justify-end' : 'justify-start'}`}
-                    >
-                        <div
-                            className={`max-w-[80%] rounded-lg p-3 ${
-                                message.isUser
-                                    ? 'bg-blue-500 text-white'
-                                    : 'bg-gray-200 text-gray-800'
-                            }`}
-                        >
-                            {message.text}
-                        </div>
-                    </div>
-                ))}
-                <div ref={messagesEndRef} />
-            </div>
+        <div className="fixed inset-0 flex items-center justify-center bg-gray-100 p-4">
+            <div className="w-full max-w-4xl h-[90vh] max-h-[700px] bg-white rounded-xl shadow-lg flex flex-col overflow-hidden">
+                {/* Header */}
+                <div className="bg-blue-900 text-white px-5 py-4 text-center shadow-md">
+                    <h1 className="text-xl font-semibold">روبوک - کتابخانه هوشمند</h1>
+                </div>
 
-            <form onSubmit={handleSubmit} className="flex gap-2 max-h-screen scroll-auto">
-                <input
-                    type="text"
-                    value={inputText}
-                    onChange={(e) => setInputText(e.target.value)}
-                    placeholder="پیام خود را بنویسید..."
-                    className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <button
-                    type="button"
-                    onClick={isRecording ? stopRecording : startRecording}
-                    disabled={isProcessing}
-                    className={`p-2 rounded-lg ${
-                        isRecording
-                            ? 'bg-red-500 hover:bg-red-600'
-                            : 'bg-green-500 hover:bg-green-600'
-                    } text-white transition-colors`}
-                >
-                    {isRecording ? 'توقف ضبط' : 'ضبط صدا'}
-                </button>
-                <button
-                    type="submit"
-                    disabled={!inputText.trim() || isProcessing}
-                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50"
-                >
-                    ارسال
-                </button>
-            </form>
+                {/* Messages Area */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50">
+                    {messages.map((message, index) => (
+                        <div 
+                            key={index} 
+                            className={`flex ${message.isUser ? 'justify-end' : 'justify-start'}`}
+                        >
+                            <div 
+                                className={`max-w-[85%] rounded-xl px-5 py-3 text-base leading-relaxed shadow-sm
+                                    ${message.isUser 
+                                        ? 'bg-blue-900 text-white' 
+                                        : 'bg-white text-gray-900 border border-gray-200'
+                                    }`}
+                            >
+                                {message.text}
+                            </div>
+                        </div>
+                    ))}
+                    <div ref={messagesEndRef} />
+                </div>
+
+                {/* Input Area */}
+                <div className="p-5 bg-white border-t border-gray-200">
+                    <form onSubmit={handleSubmit} className="flex gap-3">
+                        <div className="flex-1 flex gap-3 min-w-0">
+                            <input
+                                type="text"
+                                value={inputText}
+                                onChange={(e) => setInputText(e.target.value)}
+                                placeholder="پیام خود را بنویسید..."
+                                disabled={isRecording}
+                                className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-gray-900 bg-white
+                                    focus:outline-none focus:border-blue-900 focus:ring-2 focus:ring-blue-900/20
+                                    disabled:bg-gray-50 disabled:cursor-not-allowed"
+                            />
+                            <button 
+                                type="button" 
+                                onClick={isRecording ? stopRecording : startRecording}
+                                disabled={isProcessing}
+                                className={`w-14 h-14 flex items-center justify-center rounded-xl text-xl
+                                    ${isRecording 
+                                        ? 'bg-red-700 hover:bg-red-800' 
+                                        : 'bg-green-700 hover:bg-green-800'
+                                    } text-white transition-all duration-200
+                                    disabled:opacity-50 disabled:cursor-not-allowed
+                                    hover:scale-105 active:scale-95`}
+                            >
+                                {isRecording ? '⏹️' : '🎤'}
+                            </button>
+                        </div>
+                        <button 
+                            type="submit" 
+                            disabled={isProcessing || (!inputText.trim() && !isRecording)}
+                            className="px-6 py-3 bg-blue-900 text-white rounded-xl font-medium
+                                hover:bg-blue-800 transition-all duration-200
+                                disabled:opacity-50 disabled:cursor-not-allowed
+                                hover:scale-105 active:scale-95 whitespace-nowrap"
+                        >
+                            ارسال
+                        </button>
+                    </form>
+                </div>
+            </div>
         </div>
     );
 } 
