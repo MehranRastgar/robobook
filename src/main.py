@@ -13,6 +13,14 @@ from flask import Flask, request, jsonify, render_template, send_file
 from dotenv import load_dotenv
 import tempfile
 import base64
+from flask_cors import CORS
+import openai
+from openai import OpenAI
+import soundfile as sf
+import numpy as np
+from scipy import signal
+import librosa
+import io
 
 # تنظیم مسیر برای import‌های نسبی
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,11 +51,13 @@ logger = logging.getLogger("RoboBook")
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
+
+# Configure OpenAI client
+openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Configure upload folder
-app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-logger.info(f"Created upload folder at: {app.config['UPLOAD_FOLDER']}")
+app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
 
 def initialize_services():
     """راه‌اندازی سرویس‌های اصلی برنامه"""
@@ -99,75 +109,65 @@ def index():
     """صفحه اصلی وب اپلیکیشن"""
     return render_template('index.html')
 
+def modify_voice(audio_data, sample_rate):
+    """Modify the voice to sound more robotic"""
+    # Convert to mono if stereo
+    if len(audio_data.shape) > 1:
+        audio_data = audio_data.mean(axis=1)
+    
+    # Apply robotic effect
+    # 1. Add slight pitch shifting
+    audio_data = librosa.effects.pitch_shift(audio_data, sr=sample_rate, n_steps=2)
+    
+    # 2. Add slight time stretching
+    audio_data = librosa.effects.time_stretch(audio_data, rate=0.95)
+    
+    # 3. Add slight distortion
+    audio_data = np.tanh(audio_data * 1.2)
+    
+    # 4. Add slight echo effect
+    delay = int(0.1 * sample_rate)
+    echo = np.zeros_like(audio_data)
+    echo[delay:] = audio_data[:-delay] * 0.3
+    audio_data = audio_data + echo
+    
+    # Normalize audio
+    audio_data = audio_data / np.max(np.abs(audio_data))
+    
+    return audio_data
+
 @app.route('/api/query', methods=['POST'])
-def process_query():
-    """پردازش درخواست کاربر از طریق API"""
-    data = request.json
-    query = data.get('query', '')
-    
-    if not query:
-        return jsonify({"error": "No query provided"}), 400
-    
+def query():
     try:
-        # جستجو در پایگاه داده کتاب‌ها
-        book_results = db.search_books(query)
+        data = request.get_json()
+        query_text = data.get('query', '')
         
-        # پردازش پرسش با مدل زبانی
-        llm_response = llm.process_query(query, book_results)
+        # Search for books
+        books = search_books(query_text)
+        
+        # Generate response using GPT-4
+        response = generate_response(query_text, books)
         
         # Generate TTS response
-        tts_audio = None
-        if hasattr(speech, 'openai_available') and speech.openai_available:
-            try:
-                # Create a temporary file for TTS
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tts_file:
-                    tts_filename = tts_file.name
-                
-                # Use OpenAI client for TTS
-                openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                
-                # Generate speech with Persian voice
-                response = openai_client.audio.speech.create(
-                    model="gpt-4o-mini-tts",
-                    voice="nova",
-                    input=llm_response,
-                    response_format="mp3",
-                    speed=1.0
-                )
-                
-                # Save the audio file
-                response.stream_to_file(tts_filename)
-                
-                # Read the audio file as base64
-                with open(tts_filename, 'rb') as audio_file:
-                    tts_audio = base64.b64encode(audio_file.read()).decode('utf-8')
-                
-                # Clean up TTS file
-                try:
-                    os.unlink(tts_filename)
-                except Exception as e:
-                    logger.warning(f"Could not delete TTS file: {e}")
-                
-            except Exception as e:
-                logger.error(f"Error generating TTS with OpenAI: {e}")
+        audio_data, audio_format = generate_tts_response(response)
         
-        response_data = {
-            "response": llm_response,
-            "books": book_results
-        }
+        # Modify the voice to sound more robotic
+        audio_data = modify_voice(audio_data, 24000)  # OpenAI TTS uses 24kHz sample rate
         
-        # Add TTS audio if available
-        if tts_audio:
-            response_data["audio"] = tts_audio
-            response_data["audio_format"] = "mp3"
+        # Convert back to bytes
+        audio_buffer = io.BytesIO()
+        sf.write(audio_buffer, audio_data, 24000, format=audio_format)
+        audio_bytes = audio_buffer.getvalue()
         
-        response = jsonify(response_data)
-        response.headers['Content-Type'] = 'application/json; charset=utf-8'
-        return response
+        return jsonify({
+            'response': response,
+            'audio': base64.b64encode(audio_bytes).decode('utf-8'),
+            'audio_format': audio_format
+        })
         
     except Exception as e:
-        logger.error(f"Error processing query: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"Error in /api/query: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/speak', methods=['POST'])
 def text_to_speech():
@@ -329,80 +329,56 @@ def text_to_speech_file():
 
 @app.route('/api/listen', methods=['POST'])
 def listen():
-    """API endpoint for handling voice input"""
     try:
         if 'audio' not in request.files:
             return jsonify({'error': 'No audio file provided'}), 400
-
-        audio_file = request.files['audio']
-        if audio_file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
-
-        # Save the uploaded file temporarily
-        temp_filename = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_audio.webm')
-        audio_file.save(temp_filename)
-        logger.info('Saved uploaded audio file')
-
-        # Transcribe the audio
-        transcribed_text = openai_stt.transcribe_file(temp_filename)
-        if not transcribed_text:
-            return jsonify({'error': 'Failed to transcribe audio'}), 500
-
-        logger.info(f'Successfully transcribed text: {transcribed_text}')
-
-        # Process the transcribed text through LLM
-        try:
-            # Search for books based on the query
-            book_results = db.search_books(transcribed_text)
             
-            # Get LLM response
-            llm_response = llm.process_query(transcribed_text, book_results)
-            logger.info(f'Generated LLM response: {llm_response}')
-
-            # Generate TTS response for the LLM output
-            logger.info('Generating TTS response with OpenAI')
-            tts_filename = os.path.join(app.config['UPLOAD_FOLDER'], 'tts_response.mp3')
-            try:
-                # Use the global openai_client from initialize_services
-                response = speech.openai_client.audio.speech.create(
-                    model="gpt-4o-mini-tts",
-                    voice="nova",
-                    input=llm_response
-                )
-                response.stream_to_file(tts_filename)
-                logger.info('Successfully generated TTS response')
-            except Exception as e:
-                logger.error(f'Error generating TTS response: {str(e)}')
-                tts_filename = None
-
-            # Read the audio file as base64
-            audio_base64 = None
-            if tts_filename and os.path.exists(tts_filename):
-                with open(tts_filename, 'rb') as f:
-                    audio_base64 = base64.b64encode(f.read()).decode('utf-8')
-
-            # Clean up temporary files
-            try:
-                os.remove(temp_filename)
-                if tts_filename and os.path.exists(tts_filename):
-                    os.remove(tts_filename)
-                logger.info('Cleaned up temporary files')
-            except Exception as e:
-                logger.error(f'Error cleaning up temporary files: {str(e)}')
-
-            return jsonify({
-                'request_text': transcribed_text,
-                'response_text': llm_response,
-                'response_audio': audio_base64,
-                'audio_format': 'mp3'
-            })
-
-        except Exception as e:
-            logger.error(f'Error processing LLM response: {str(e)}')
-            return jsonify({'error': f'Error processing response: {str(e)}'}), 500
-
+        audio_file = request.files['audio']
+        
+        # Save the uploaded audio file temporarily
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_audio.webm')
+        audio_file.save(temp_path)
+        
+        # Transcribe audio using Whisper
+        with open(temp_path, 'rb') as f:
+            transcript = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="fa"
+            )
+        
+        # Clean up the temporary file
+        os.remove(temp_path)
+        
+        # Get the transcribed text
+        transcribed_text = transcript.text
+        
+        # Search for books based on transcribed text
+        books = search_books(transcribed_text)
+        
+        # Generate response using GPT-4
+        response = generate_response(transcribed_text, books)
+        
+        # Generate TTS response
+        audio_data, audio_format = generate_tts_response(response)
+        
+        # Modify the voice to sound more robotic
+        audio_data = modify_voice(audio_data, 24000)  # OpenAI TTS uses 24kHz sample rate
+        
+        # Convert back to bytes
+        audio_buffer = io.BytesIO()
+        sf.write(audio_buffer, audio_data, 24000, format=audio_format)
+        audio_bytes = audio_buffer.getvalue()
+        
+        return jsonify({
+            'request_text': transcribed_text,
+            'response_text': response,
+            'response_audio': base64.b64encode(audio_bytes).decode('utf-8'),
+            'audio_format': audio_format
+        })
+        
     except Exception as e:
-        logger.error(f'Error in /api/listen: {str(e)}')
+        print(f"Error in /api/listen: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/listen_and_respond', methods=['GET'])
@@ -489,6 +465,66 @@ def test_speech():
             
     except Exception as e:
         print(f"خطا در تست گفتار: {e}")
+
+def search_books(query: str) -> list:
+    """Search for books in the database based on the query"""
+    try:
+        # Initialize database connection
+        config = AppConfig()
+        db = BookDatabase(config.db_path)
+        
+        # Search for books
+        results = db.search_books(query)
+        return results
+    except Exception as e:
+        print(f"Error searching books: {str(e)}")
+        return []
+
+def generate_response(query: str, books: list) -> str:
+    """Generate a response using GPT-4 based on the query and book results"""
+    try:
+        # Initialize LLM service
+        config = AppConfig()
+        llm = LLMService(model_type=config.model_type, api_key=config.api_key)
+        
+        # Generate response
+        response = llm.process_query(query, books)
+        return response
+    except Exception as e:
+        print(f"Error generating response: {str(e)}")
+        return "متأسفانه خطایی در پردازش درخواست شما رخ داد. لطفاً دوباره تلاش کنید."
+
+def generate_tts_response(text: str) -> tuple:
+    """Generate TTS audio from text using OpenAI"""
+    try:
+        # Create a temporary file for TTS
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tts_file:
+            tts_filename = tts_file.name
+        
+        # Generate speech with Persian voice using streaming response
+        response = openai_client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="nova",
+            input=text,
+            response_format="mp3",
+            speed=1.0
+        )
+        
+        # Save the audio file using streaming response
+        with open(tts_filename, 'wb') as f:
+            for chunk in response.iter_bytes():
+                f.write(chunk)
+        
+        # Read the audio file
+        audio_data, sample_rate = sf.read(tts_filename)
+        
+        # Clean up the temporary file
+        os.remove(tts_filename)
+        
+        return audio_data, 'mp3'
+    except Exception as e:
+        print(f"Error generating TTS response: {str(e)}")
+        return None, None
 
 def main():
     """تابع اصلی برنامه"""

@@ -13,6 +13,7 @@ export default function ChatInterface() {
     const [inputText, setInputText] = useState('');
     const [isRecording, setIsRecording] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [voiceEffect, setVoiceEffect] = useState(0.5); // 0 = normal, 1 = maximum robotic
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -79,6 +80,7 @@ export default function ChatInterface() {
         setIsProcessing(true);
         const formData = new FormData();
         formData.append('audio', audioBlob, 'recording.webm');
+        formData.append('voice_effect', voiceEffect.toString());
 
         try {
             console.log('Sending request to /api/listen...');
@@ -187,7 +189,10 @@ export default function ChatInterface() {
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ query: inputText }),
+                    body: JSON.stringify({ 
+                        query: inputText,
+                        voice_effect: voiceEffect 
+                    }),
                 });
 
                 if (!response.ok) {
@@ -273,6 +278,34 @@ export default function ChatInterface() {
                         </div>
                     ))}
                     <div ref={messagesEndRef} />
+                </div>
+
+                {/* Voice Control */}
+                <div className="px-5 py-3 bg-gray-50 border-t border-gray-200">
+                    <div className="flex items-center gap-3">
+                        <label className="text-sm text-gray-600">صدای ربات:</label>
+                        <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={voiceEffect}
+                            onChange={(e) => setVoiceEffect(parseFloat(e.target.value))}
+                            className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer
+                                [&::-webkit-slider-thumb]:appearance-none
+                                [&::-webkit-slider-thumb]:w-4
+                                [&::-webkit-slider-thumb]:h-4
+                                [&::-webkit-slider-thumb]:rounded-full
+                                [&::-webkit-slider-thumb]:bg-blue-900
+                                [&::-webkit-slider-thumb]:cursor-pointer
+                                [&::-webkit-slider-thumb]:transition-all
+                                [&::-webkit-slider-thumb]:duration-200
+                                [&::-webkit-slider-thumb]:hover:scale-110"
+                        />
+                        <span className="text-sm text-gray-600 w-12 text-center">
+                            {Math.round(voiceEffect * 100)}%
+                        </span>
+                    </div>
                 </div>
 
                 {/* Input Area */}
