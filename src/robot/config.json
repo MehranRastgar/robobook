@@ -1,0 +1,14 @@
+{
+    "uart_port": "/dev/ttyUSB0",
+    "uart_baudrate": 115200,
+    "camera_index": 0,
+    "openai_api_key": "",
+    "robobook_api_url": "http://localhost:5000/api/query",
+    "wake_word_threshold": 0.8,
+    "audio_sample_rate": 16000,
+    "audio_channels": 1,
+    "camera_width": 640,
+    "camera_height": 480,
+    "command_timeout": 1.0,
+    "max_audio_duration": 3.0
+}

@@ -30,6 +30,7 @@ from src.db.database import BookDatabase
 from src.utils.speech import SpeechHandler
 from src.utils.speech.stt.openai_stt import OpenAISTT
 from src.utils.config import AppConfig
+from src.api.book_reader_api import book_reader_bp
 
 # تنظیم لاگینگ
 logging.basicConfig(
@@ -52,6 +53,9 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+# Register blueprints
+app.register_blueprint(book_reader_bp)
 
 # Configure OpenAI client
 openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))

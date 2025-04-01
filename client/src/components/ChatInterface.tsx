@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Book, ApiResponse, AudioResponse } from '@/types/api';
+import BookUploader from './PDFUploader';
 
 interface Message {
     text: string;
@@ -14,6 +15,7 @@ export default function ChatInterface() {
     const [isRecording, setIsRecording] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [voiceEffect, setVoiceEffect] = useState(0.5); // 0 = normal, 1 = maximum robotic
+    const [showUploader, setShowUploader] = useState(false);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -251,6 +253,21 @@ export default function ChatInterface() {
         }
     };
 
+    const handleUploadSuccess = (bookId: number) => {
+        setMessages(prev => [
+            ...prev,
+            { text: 'کتاب با موفقیت آپلود شد.', isUser: false }
+        ]);
+        setShowUploader(false);
+    };
+
+    const handleUploadError = (error: string) => {
+        setMessages(prev => [
+            ...prev,
+            { text: error, isUser: false }
+        ]);
+    };
+
     return (
         <div className="fixed inset-0 flex items-center justify-center bg-gray-100 p-4">
             <div className="w-full max-w-4xl h-[90vh] max-h-[700px] bg-white rounded-xl shadow-lg flex flex-col overflow-hidden">
@@ -280,75 +297,66 @@ export default function ChatInterface() {
                     <div ref={messagesEndRef} />
                 </div>
 
-                {/* Voice Control */}
-                <div className="px-5 py-3 bg-gray-50 border-t border-gray-200">
-                    <div className="flex items-center gap-3">
-                        <label className="text-sm text-gray-600">صدای ربات:</label>
-                        <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.1"
-                            value={voiceEffect}
-                            onChange={(e) => setVoiceEffect(parseFloat(e.target.value))}
-                            className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer
-                                [&::-webkit-slider-thumb]:appearance-none
-                                [&::-webkit-slider-thumb]:w-4
-                                [&::-webkit-slider-thumb]:h-4
-                                [&::-webkit-slider-thumb]:rounded-full
-                                [&::-webkit-slider-thumb]:bg-blue-900
-                                [&::-webkit-slider-thumb]:cursor-pointer
-                                [&::-webkit-slider-thumb]:transition-all
-                                [&::-webkit-slider-thumb]:duration-200
-                                [&::-webkit-slider-thumb]:hover:scale-110"
+                {/* Uploader */}
+                {showUploader ? (
+                    <div className="p-4 border-t">
+                        <BookUploader
+                            onUploadSuccess={handleUploadSuccess}
+                            onUploadError={handleUploadError}
                         />
-                        <span className="text-sm text-gray-600 w-12 text-center">
-                            {Math.round(voiceEffect * 100)}%
-                        </span>
                     </div>
-                </div>
-
-                {/* Input Area */}
-                <div className="p-5 bg-white border-t border-gray-200">
-                    <form onSubmit={handleSubmit} className="flex gap-3">
-                        <div className="flex-1 flex gap-3 min-w-0">
+                ) : (
+                    <div className="p-5 bg-white border-t border-gray-200">
+                        <div className="flex justify-between items-center mb-4">
+                            <button
+                                onClick={() => setShowUploader(true)}
+                                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+                            >
+                                آپلود کتاب
+                            </button>
+                            <div className="flex items-center space-x-2">
+                                <span className="text-sm text-gray-600">تأثیر صدا:</span>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="1"
+                                    step="0.1"
+                                    value={voiceEffect}
+                                    onChange={(e) => setVoiceEffect(parseFloat(e.target.value))}
+                                    className="w-32"
+                                />
+                            </div>
+                        </div>
+                        <form onSubmit={handleSubmit} className="flex space-x-2">
+                            <button
+                                type="button"
+                                onClick={isRecording ? stopRecording : startRecording}
+                                className={`px-4 py-2 rounded-md ${
+                                    isRecording
+                                        ? 'bg-red-600 hover:bg-red-700'
+                                        : 'bg-blue-600 hover:bg-blue-700'
+                                } text-white`}
+                            >
+                                {isRecording ? 'توقف ضبط' : 'ضبط صدا'}
+                            </button>
                             <input
                                 type="text"
                                 value={inputText}
                                 onChange={(e) => setInputText(e.target.value)}
                                 placeholder="پیام خود را بنویسید..."
-                                disabled={isRecording}
-                                className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-gray-900 bg-white
-                                    focus:outline-none focus:border-blue-900 focus:ring-2 focus:ring-blue-900/20
-                                    disabled:bg-gray-50 disabled:cursor-not-allowed"
+                                className="text-black flex-1 p-2 border rounded-md"
+                                disabled={isProcessing || isRecording}
                             />
-                            <button 
-                                type="button" 
-                                onClick={isRecording ? stopRecording : startRecording}
-                                disabled={isProcessing}
-                                className={`w-14 h-14 flex items-center justify-center rounded-xl text-xl
-                                    ${isRecording 
-                                        ? 'bg-red-700 hover:bg-red-800' 
-                                        : 'bg-green-700 hover:bg-green-800'
-                                    } text-white transition-all duration-200
-                                    disabled:opacity-50 disabled:cursor-not-allowed
-                                    hover:scale-105 active:scale-95`}
+                            <button
+                                type="submit"
+                                disabled={isProcessing || isRecording || (!inputText.trim() && !isRecording)}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
                             >
-                                {isRecording ? '⏹️' : '🎤'}
+                                ارسال
                             </button>
-                        </div>
-                        <button 
-                            type="submit" 
-                            disabled={isProcessing || (!inputText.trim() && !isRecording)}
-                            className="px-6 py-3 bg-blue-900 text-white rounded-xl font-medium
-                                hover:bg-blue-800 transition-all duration-200
-                                disabled:opacity-50 disabled:cursor-not-allowed
-                                hover:scale-105 active:scale-95 whitespace-nowrap"
-                        >
-                            ارسال
-                        </button>
-                    </form>
-                </div>
+                        </form>
+                    </div>
+                )}
             </div>
         </div>
     );
