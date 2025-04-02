@@ -8,7 +8,7 @@ python-dotenv==1.0.0
 # API and LLM integration
 requests==2.31.0
 llama-cpp-python==0.2.11
-openai==1.3.0
+openai>=1.0.0
 
 # Audio processing
 SpeechRecognition==3.10.0

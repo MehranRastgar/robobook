@@ -39,28 +39,25 @@ class PDFImporter:
             # Split into chapters if possible
             chapters = self._split_into_chapters(full_text)
             
+            # Get page count before closing
+            page_count = len(doc)
+            
             # Add to database
             book_id = self.db.add_book(
                 title=title,
                 author=author,
-                content=full_text,
-                isbn=isbn,
-                description=metadata.get('subject', ''),
-                metadata={
-                    'pdf_path': pdf_path,
-                    'page_count': len(doc),
-                    'import_date': doc.metadata.get('creationDate', ''),
-                    'keywords': metadata.get('keywords', '')
-                }
+                text_content=full_text,
+                isbn=isbn
             )
             
+            # Close document after we're done using it
             doc.close()
             
             return {
                 'book_id': book_id,
                 'title': title,
                 'author': author,
-                'page_count': len(doc),
+                'page_count': page_count,
                 'status': 'success'
             }
             

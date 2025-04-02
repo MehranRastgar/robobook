@@ -20,32 +20,18 @@ class TXTImporter:
             # Clean up the text
             full_text = self._clean_text(full_text)
             
-            # Split into chapters if possible
-            chapters = self._split_into_chapters(full_text)
-            
-            # Count words
-            word_count = len(full_text.split())
-            
             # Add to database
             book_id = self.db.add_book(
                 title=title or os.path.splitext(os.path.basename(txt_path))[0],
                 author=author or 'Unknown Author',
-                content=full_text,
                 isbn=isbn,
-                description='',
-                metadata={
-                    'txt_path': txt_path,
-                    'word_count': word_count,
-                    'import_date': '',
-                    'keywords': ''
-                }
+                text_content=full_text
             )
             
             return {
                 'book_id': book_id,
                 'title': title,
                 'author': author,
-                'word_count': word_count,
                 'status': 'success'
             }
             
@@ -141,8 +127,22 @@ class TXTImporter:
     def extract_metadata(self, txt_path: str) -> Dict:
         """Extract metadata from TXT file"""
         try:
-            with open(txt_path, 'r', encoding='utf-8') as file:
-                content = file.read()
+            # Try different encodings
+            encodings = ['utf-8', 'utf-8-sig', 'cp1256', 'iso-8859-6', 'windows-1256']
+            content = None
+            
+            for encoding in encodings:
+                try:
+                    with open(txt_path, 'r', encoding=encoding) as file:
+                        content = file.read()
+                        break
+                except UnicodeDecodeError:
+                    continue
+            
+            if content is None:
+                return {
+                    'error': 'Could not read file with any supported encoding'
+                }
             
             # Get first few lines for preview
             preview_lines = content.split('\n')[:5]
@@ -151,8 +151,11 @@ class TXTImporter:
             # Count words
             word_count = len(content.split())
             
+            # Try to extract title from first line
+            title = preview_lines[0].strip() if preview_lines else ''
+            
             return {
-                'title': '',
+                'title': title,
                 'author': '',
                 'word_count': word_count,
                 'preview': preview_text
